@@ -8,9 +8,8 @@ pub struct Config {
     user_agent: Option<String>,
     username: Option<String>,
     password: Option<String>,
-    #[cfg(any(feature = "reqwest-default-tls", feature = "reqwest-rustls"))]
-    accept_invalid_certs: bool,
     accepted_types: Option<Vec<(MediaTypes, Option<f64>)>>,
+    reqwest_client: reqwest::Client,
 }
 
 impl Config {
@@ -18,16 +17,12 @@ impl Config {
     pub fn default() -> Self {
         Self {
             index: "registry-1.docker.io".into(),
-            insecure_registry: cfg!(not(any(
-                feature = "reqwest-default-tls",
-                feature = "reqwest-rustls"
-            ))),
-            #[cfg(any(feature = "reqwest-default-tls", feature = "reqwest-rustls"))]
-            accept_invalid_certs: false,
+            insecure_registry: false,
             accepted_types: None,
             user_agent: Some(crate::USER_AGENT.to_owned()),
             username: None,
             password: None,
+            reqwest_client: reqwest::Client::new(),
         }
     }
 
@@ -38,17 +33,24 @@ impl Config {
     }
 
     /// Whether to use an insecure HTTP connection to the registry.
-    #[cfg(any(feature = "reqwest-default-tls", feature = "reqwest-rustls"))]
     pub fn insecure_registry(mut self, insecure: bool) -> Self {
         self.insecure_registry = insecure;
         self
     }
 
     /// Set whether or not to accept invalid certificates.
+    ///
+    /// This will override any configured [`reqwest_client`][Self::reqwest_client].
+    /// Use that method directly instead.
+    #[deprecated]
     #[cfg(any(feature = "reqwest-default-tls", feature = "reqwest-rustls"))]
-    pub fn accept_invalid_certs(mut self, accept_invalid_certs: bool) -> Self {
-        self.accept_invalid_certs = accept_invalid_certs;
-        self
+    pub fn accept_invalid_certs(self, accept_invalid_certs: bool) -> Self {
+        self.reqwest_client(
+            reqwest::ClientBuilder::new()
+                .danger_accept_invalid_certs(accept_invalid_certs)
+                .build()
+                .expect("Failed to build reqwest client for invalid certs setting"),
+        )
     }
 
     /// Set custom Accept headers
@@ -87,6 +89,24 @@ impl Config {
         self
     }
 
+    /// Use a pre-configured reqwest client instance.
+    ///
+    /// Example: Allow invalid certs
+    /// ```
+    /// # (|| -> reqwest::Result<()> {
+    /// # let config = dkregistry::v2::Config::default();
+    /// let config = config.reqwest_client(
+    ///     reqwest::ClientBuilder::new()
+    ///         .danger_accept_invalid_certs(true)
+    ///         .build()?
+    /// );
+    /// # Ok(())
+    /// # })().unwrap();
+    pub fn reqwest_client(mut self, client: reqwest::Client) -> Self {
+        self.reqwest_client = client;
+        self
+    }
+
     /// Return a `Client` to interact with a v2 registry.
     pub fn build(self) -> Result<Client> {
         let base = if self.insecure_registry {
@@ -107,10 +127,6 @@ impl Config {
                 p.unwrap_or_else(|| "".into()),
             )),
         };
-        let client_builder = reqwest::ClientBuilder::new();
-        #[cfg(any(feature = "reqwest-default-tls", feature = "reqwest-rustls"))]
-        let client_builder = client_builder.danger_accept_invalid_certs(self.accept_invalid_certs);
-        let client = client_builder.build()?;
 
         let accepted_types = match self.accepted_types {
             Some(a) => a,
@@ -137,7 +153,7 @@ impl Config {
             credentials: creds,
             user_agent: self.user_agent,
             auth: None,
-            client,
+            client: self.reqwest_client,
             accepted_types,
         };
         Ok(c)
