@@ -1,4 +1,6 @@
 use crate::{mediatypes::MediaTypes, v2::*};
+#[cfg(any(feature = "reqwest-default-tls", feature = "reqwest-rustls"))]
+use reqwest::Certificate;
 
 /// Configuration for a `Client`.
 #[derive(Debug)]
@@ -8,29 +10,13 @@ pub struct Config {
     user_agent: Option<String>,
     username: Option<String>,
     password: Option<String>,
-    #[cfg(any(feature = "reqwest-default-tls", feature = "reqwest-rustls"))]
     accept_invalid_certs: bool,
+    #[cfg(any(feature = "reqwest-default-tls", feature = "reqwest-rustls"))]
+    root_certificates: Vec<Certificate>,
     accepted_types: Option<Vec<(MediaTypes, Option<f64>)>>,
 }
 
 impl Config {
-    /// Initialize `Config` with default values.
-    pub fn default() -> Self {
-        Self {
-            index: "registry-1.docker.io".into(),
-            insecure_registry: cfg!(not(any(
-                feature = "reqwest-default-tls",
-                feature = "reqwest-rustls"
-            ))),
-            #[cfg(any(feature = "reqwest-default-tls", feature = "reqwest-rustls"))]
-            accept_invalid_certs: false,
-            accepted_types: None,
-            user_agent: Some(crate::USER_AGENT.to_owned()),
-            username: None,
-            password: None,
-        }
-    }
-
     /// Set registry service to use (vhost or IP).
     pub fn registry(mut self, reg: &str) -> Self {
         self.index = reg.to_owned();
@@ -38,16 +24,21 @@ impl Config {
     }
 
     /// Whether to use an insecure HTTP connection to the registry.
-    #[cfg(any(feature = "reqwest-default-tls", feature = "reqwest-rustls"))]
     pub fn insecure_registry(mut self, insecure: bool) -> Self {
         self.insecure_registry = insecure;
         self
     }
 
     /// Set whether or not to accept invalid certificates.
-    #[cfg(any(feature = "reqwest-default-tls", feature = "reqwest-rustls"))]
     pub fn accept_invalid_certs(mut self, accept_invalid_certs: bool) -> Self {
         self.accept_invalid_certs = accept_invalid_certs;
+        self
+    }
+
+    /// Add a root certificate the client should trust for TLS verification
+    #[cfg(any(feature = "reqwest-default-tls", feature = "reqwest-rustls"))]
+    pub fn add_root_certificate(mut self, certificate: Certificate) -> Self {
+        self.root_certificates.push(certificate);
         self
     }
 
@@ -107,10 +98,19 @@ impl Config {
                 p.unwrap_or_else(|| "".into()),
             )),
         };
-        let client_builder = reqwest::ClientBuilder::new();
+
+        #[allow(unused_mut)]
+        let mut builder = reqwest::ClientBuilder::new();
+
         #[cfg(any(feature = "reqwest-default-tls", feature = "reqwest-rustls"))]
-        let client_builder = client_builder.danger_accept_invalid_certs(self.accept_invalid_certs);
-        let client = client_builder.build()?;
+        {
+            builder = builder.danger_accept_invalid_certs(self.accept_invalid_certs);
+            for ca in self.root_certificates {
+                builder = builder.add_root_certificate(ca)
+            }
+        }
+
+        let client = builder.build()?;
 
         let accepted_types = match self.accepted_types {
             Some(a) => a,
@@ -141,5 +141,22 @@ impl Config {
             accepted_types,
         };
         Ok(c)
+    }
+}
+
+impl Default for Config {
+    /// Initialize `Config` with default values.
+    fn default() -> Self {
+        Self {
+            index: "registry-1.docker.io".into(),
+            insecure_registry: false,
+            accept_invalid_certs: false,
+            #[cfg(any(feature = "reqwest-default-tls", feature = "reqwest-rustls"))]
+            root_certificates: Default::default(),
+            accepted_types: None,
+            user_agent: Some(crate::USER_AGENT.to_owned()),
+            username: None,
+            password: None,
+        }
     }
 }
